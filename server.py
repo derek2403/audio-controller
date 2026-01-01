@@ -2,9 +2,9 @@ import asyncio
 import logging
 from flask import Flask, jsonify, render_template_string
 import pyautogui
-import comtypes # Needed for the threading fix
+import comtypes
 
-# Audio Imports
+# --- DIRECT AUDIO IMPORTS ---
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -18,22 +18,28 @@ app = Flask(__name__)
 # --- 2. WINDOWS MEDIA IMPORTS ---
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
 
-# --- 3. AUDIO CONTROL (Thread-Safe Version) ---
+# --- 3. ROBUST VOLUME CONTROL (Manual Connection) ---
 def change_volume(amount):
     """
-    Changes volume directly via Audio Driver.
-    Includes CoInitialize to fix the 'AttributeError' in threads.
+    Connects to Audio Driver manually to bypass 'AttributeError'.
+    Works in Screensaver/Lock Screen.
     """
     try:
-        # 1. Initialize COM library for this specific thread
+        # 1. Init COM for this thread
         comtypes.CoInitialize()
         
-        # 2. Get Speakers
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        # 2. Get the Enumerator (The Master List of Devices)
+        enumerator = AudioUtilities.GetDeviceEnumerator()
+        
+        # 3. Find the Active Speaker (0=Render, 1=Multimedia)
+        # This bypasses the buggy 'GetSpeakers()' helper
+        device = enumerator.GetDefaultAudioEndpoint(0, 1)
+        
+        # 4. Activate the Interface
+        interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         volume = cast(interface, POINTER(IAudioEndpointVolume))
         
-        # 3. Adjust Volume
+        # 5. Set Volume
         current = volume.GetMasterVolumeLevelScalar()
         new_vol = max(0.0, min(1.0, current + amount))
         volume.SetMasterVolumeLevelScalar(new_vol, None)
@@ -41,7 +47,6 @@ def change_volume(amount):
     except Exception as e:
         print(f"Volume Error: {e}")
     finally:
-        # 4. Clean up (Optional but good practice)
         try:
             comtypes.CoUninitialize()
         except:
@@ -63,7 +68,6 @@ async def get_media_info():
             info["title"] = props.title if props.title else "Unknown Title"
             info["artist"] = props.artist if props.artist else "Unknown Artist"
             
-            # Check Playback Status
             playback_info = session.get_playback_info()
             if playback_info:
                 info["is_playing"] = (playback_info.playback_status == 4)
@@ -165,15 +169,13 @@ def status(): return jsonify(asyncio.run(get_media_info()))
 
 @app.route('/control/<action>')
 def control(action):
-    # DIRECT VOLUME CONTROL (Bypasses Screensaver)
     if action == 'volup':
-        change_volume(0.10) # Up 10%
+        change_volume(0.05) # Small 5% steps for safety
     elif action == 'voldown':
-        change_volume(-0.10) # Down 10%
+        change_volume(-0.05)
     else:
         asyncio.run(media_action(action))
     return "", 204
 
 if __name__ == '__main__':
-    # Using 0.0.0.0 to allow access from iPhone
     app.run(host='0.0.0.0', port=5000)
