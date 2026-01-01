@@ -2,14 +2,15 @@ import asyncio
 import logging
 from flask import Flask, jsonify, render_template_string
 import pyautogui
+import comtypes # Needed for the threading fix
 
-# Audio Imports (The secret to bypassing the lock screen)
+# Audio Imports
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-# --- 1. SETUP & SILENCE ---
-pyautogui.FAILSAFE = False # Just in case
+# --- 1. SETUP ---
+pyautogui.FAILSAFE = False
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 app = Flask(__name__)
@@ -17,28 +18,34 @@ app = Flask(__name__)
 # --- 2. WINDOWS MEDIA IMPORTS ---
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
 
-# --- 3. AUDIO CONTROL HELPER ---
+# --- 3. AUDIO CONTROL (Thread-Safe Version) ---
 def change_volume(amount):
     """
     Changes volume directly via Audio Driver.
-    amount: +0.10 (Up 10%) or -0.10 (Down 10%)
-    Works even if screen is locked/screensaver is on.
+    Includes CoInitialize to fix the 'AttributeError' in threads.
     """
     try:
+        # 1. Initialize COM library for this specific thread
+        comtypes.CoInitialize()
+        
+        # 2. Get Speakers
         devices = AudioUtilities.GetSpeakers()
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         volume = cast(interface, POINTER(IAudioEndpointVolume))
         
-        # Get current level (0.0 to 1.0)
+        # 3. Adjust Volume
         current = volume.GetMasterVolumeLevelScalar()
-        
-        # Calculate new level (clamped between 0.0 and 1.0)
         new_vol = max(0.0, min(1.0, current + amount))
-        
-        # Set it
         volume.SetMasterVolumeLevelScalar(new_vol, None)
+        
     except Exception as e:
         print(f"Volume Error: {e}")
+    finally:
+        # 4. Clean up (Optional but good practice)
+        try:
+            comtypes.CoUninitialize()
+        except:
+            pass
 
 # --- 4. BACKEND: GET INFO ---
 async def get_media_info():
@@ -56,7 +63,7 @@ async def get_media_info():
             info["title"] = props.title if props.title else "Unknown Title"
             info["artist"] = props.artist if props.artist else "Unknown Artist"
             
-            # Check if playing
+            # Check Playback Status
             playback_info = session.get_playback_info()
             if playback_info:
                 info["is_playing"] = (playback_info.playback_status == 4)
@@ -168,4 +175,5 @@ def control(action):
     return "", 204
 
 if __name__ == '__main__':
+    # Using 0.0.0.0 to allow access from iPhone
     app.run(host='0.0.0.0', port=5000)
