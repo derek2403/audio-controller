@@ -1,47 +1,54 @@
 import asyncio
-import base64
-from flask import Flask, jsonify, render_template_string
 import pyautogui
-# The library to talk to Windows Media Controls
-from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-from winsdk.windows.storage.streams import DataReader
+from flask import Flask, jsonify, render_template_string
+
+# --- UPDATED IMPORTS (Using the new winrt libraries) ---
+from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
 
 app = Flask(__name__)
 
-# --- BACKEND: WINDOWS CONTROLS ---
+# --- BACKEND: WINDOWS MEDIA CONTROL ---
 
 async def get_media_info():
-    """Gets the current song Title, Artist, and status."""
-    sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
-    session = sessions.get_current_session()
+    """Reads the currently playing song from Windows."""
+    try:
+        # Get the main media manager
+        sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        # Get the active session (Apple Music, Spotify, etc.)
+        session = sessions.get_current_session()
+
+        if session:
+            # Get the metadata (song info)
+            props = await session.try_get_media_properties_async()
+            info = {
+                "title": props.title if props.title else "Unknown Title",
+                "artist": props.artist if props.artist else "Unknown Artist",
+                "album": props.album_title if props.album_title else ""
+            }
+            return info
+    except Exception as e:
+        print(f"Error: {e}")
     
-    if session:
-        props = await session.try_get_media_properties_async()
-        info = {
-            "status": "playing", # Simplification; actual status requires more parsing
-            "title": props.title if props.title else "Unknown Title",
-            "artist": props.artist if props.artist else "Unknown Artist",
-            "album": props.album_title if props.album_title else ""
-        }
-        return info
-    else:
-        return {"status": "paused", "title": "Nothing Playing", "artist": "Windows Media", "album": ""}
+    # Default if nothing is playing
+    return {"title": "Nothing Playing", "artist": "Windows Media", "album": ""}
 
 async def media_action(action):
-    """Sends Play/Pause/Next/Prev commands to Windows."""
-    sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
-    session = sessions.get_current_session()
-    if session:
-        if action == 'play':
-            await session.try_toggle_play_pause_async()
-        elif action == 'next':
-            await session.try_skip_next_async()
-        elif action == 'prev':
-            await session.try_skip_previous_async()
+    """Sends Play/Pause/Skip commands to Windows."""
+    try:
+        sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        session = sessions.get_current_session()
+        if session:
+            if action == 'play':
+                await session.try_toggle_play_pause_async()
+            elif action == 'next':
+                await session.try_skip_next_async()
+            elif action == 'prev':
+                await session.try_skip_previous_async()
+    except Exception as e:
+        print(f"Error sending command: {e}")
 
 # --- FRONTEND: HTML + TAILWIND CSS ---
-# We embed the HTML here so you only need one file.
-
+# This is the "website" your iPhone will see.
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -52,11 +59,11 @@ HTML_TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #0f172a; color: white; }
-        /* Disable double-tap zoom on mobile */
+        /* Prevent double-tap zoom on iPhone */
         button { touch-action: manipulation; }
     </style>
     <script>
-        // Update Song Info every 1 second
+        // 1. Refresh Song Info every 1 second
         setInterval(async () => {
             try {
                 const response = await fetch('/status');
@@ -67,18 +74,19 @@ HTML_TEMPLATE = """
             } catch (e) { console.log("Connection lost"); }
         }, 1000);
 
-        // Send Command
+        // 2. Button Click Logic
         async function send(action) {
-            // Visual feedback
+            // Add a little visual "press" effect
             const btn = event.currentTarget;
             btn.classList.add('scale-95', 'opacity-80');
             setTimeout(() => btn.classList.remove('scale-95', 'opacity-80'), 100);
             
+            // Send command to server
             await fetch('/control/' + action);
         }
     </script>
 </head>
-<body class="flex items-center justify-center h-screen select-none">
+<body class="flex items-center justify-center h-screen select-none overflow-hidden">
 
     <div class="w-full max-w-md p-6 bg-slate-800 rounded-3xl shadow-2xl border border-slate-700 text-center mx-4">
         
@@ -124,7 +132,6 @@ HTML_TEMPLATE = """
                 </svg>
             </button>
         </div>
-
     </div>
 </body>
 </html>
@@ -138,22 +145,23 @@ def index():
 
 @app.route('/status')
 def status():
-    # Run the async Windows function
+    # Use asyncio to run the async Windows function
     info = asyncio.run(get_media_info())
     return jsonify(info)
 
 @app.route('/control/<action>')
 def control(action):
     if action in ['volup', 'voldown']:
-        # Use PyAutoGUI for volume (simulates physical key press)
-        # Pressing 5 times makes the change noticeable
+        # Volume uses "Keyboard Simulation" (PyAutoGUI)
         key = 'volumeup' if action == 'volup' else 'volumedown'
         pyautogui.press(key, presses=5)
     else:
-        # Use WinSDK for Media (works in background)
+        # Media uses "Windows Internal Controls" (WinRT)
         asyncio.run(media_action(action))
     return "OK"
 
 if __name__ == '__main__':
-    # Host 0.0.0.0 makes it accessible to your iPhone
+    # '0.0.0.0' lets your iPhone connect.
+    # '5000' is the port number.
+    print("Server starting... Connect your iPhone to http://YOUR-PC-IP:5000")
     app.run(host='0.0.0.0', port=5000)
