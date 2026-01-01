@@ -3,31 +3,39 @@ import logging
 from flask import Flask, jsonify, render_template_string
 import pyautogui
 
-# --- 1. SILENCE THE LOGS ---
-# This turns off the spammy "GET /status 200" messages
+# --- 1. SILENCE LOGS ---
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 app = Flask(__name__)
 
-# --- 2. WINDOWS MEDIA IMPORTS ---
-from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-from winrt.windows.storage.streams import DataReader
+# --- 2. WINDOWS IMPORTS ---
+from winrt.windows.media.control import \
+    GlobalSystemMediaTransportControlsSessionManager, \
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus
 
-# --- 3. BACKEND: TALK TO WINDOWS ---
+# --- 3. BACKEND ---
 async def get_media_info():
     try:
         sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
         session = sessions.get_current_session()
         if session:
             props = await session.try_get_media_properties_async()
+            
+            # CHECK REAL PLAYBACK STATUS
+            # 4 = Playing, 5 = Paused, etc.
+            playback_info = session.get_playback_info()
+            status = playback_info.playback_status
+            is_playing = (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING)
+
             return {
                 "title": props.title if props.title else "Unknown Title",
                 "artist": props.artist if props.artist else "Unknown Artist",
-                "album": props.album_title if props.album_title else ""
+                "is_playing": is_playing
             }
     except:
         pass
-    return {"title": "Nothing Playing", "artist": "Windows Media", "album": ""}
+    # Default if nothing is running
+    return {"title": "Nothing Playing", "artist": "Windows Media", "is_playing": False}
 
 async def media_action(action):
     try:
@@ -40,7 +48,7 @@ async def media_action(action):
     except:
         pass
 
-# --- 4. FRONTEND: CLEANER ICONS ---
+# --- 4. FRONTEND ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -53,14 +61,30 @@ HTML_TEMPLATE = """
         body { background-color: #0f172a; color: white; -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.95); opacity: 0.7; }
         button { transition: all 0.1s; touch-action: manipulation; }
+        .hidden { display: none; }
     </style>
     <script>
         setInterval(async () => {
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
+                
+                // Update Text
                 document.getElementById('t').innerText = data.title;
                 document.getElementById('a').innerText = data.artist;
+
+                // Update Play/Pause Icon
+                const playIcon = document.getElementById('icon-play');
+                const pauseIcon = document.getElementById('icon-pause');
+
+                if (data.is_playing) {
+                    playIcon.classList.add('hidden');
+                    pauseIcon.classList.remove('hidden');
+                } else {
+                    playIcon.classList.remove('hidden');
+                    pauseIcon.classList.add('hidden');
+                }
+
             } catch (e) {}
         }, 1000);
 
@@ -91,9 +115,15 @@ HTML_TEMPLATE = """
         </button>
 
         <button onclick="send('play')" class="w-24 h-24 rounded-full bg-blue-500 shadow-blue-500/50 shadow-2xl flex items-center justify-center text-white">
-            <svg class="w-10 h-10" fill="currentColor" viewBox="0 0 24 24">
+            
+            <svg id="icon-play" class="w-12 h-12 ml-1" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z"></path>
             </svg>
+
+            <svg id="icon-pause" class="w-10 h-10 hidden" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path>
+            </svg>
+
         </button>
 
         <button onclick="send('next')" class="p-4 text-slate-300 hover:text-white">
@@ -107,7 +137,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- 5. ROUTES ---
+# --- 5. RUN ---
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
@@ -123,5 +153,4 @@ def control(action):
     return "", 204
 
 if __name__ == '__main__':
-    # Run server
     app.run(host='0.0.0.0', port=5000)
