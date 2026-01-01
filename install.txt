@@ -1,1 +1,1 @@
-pip install flask pyautogui winrt-Windows.Media.Control winrt-Windows.Storage.Streams
+pip install flask pyautogui winrt-Windows.Media.Control winrt-Windows.Storage.Streams winrt-Windows.Foundation
