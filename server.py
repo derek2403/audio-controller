@@ -1,167 +1,127 @@
 import asyncio
-import pyautogui
+import logging
 from flask import Flask, jsonify, render_template_string
+import pyautogui
 
-# --- UPDATED IMPORTS (Using the new winrt libraries) ---
-from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-
+# --- 1. SILENCE THE LOGS ---
+# This turns off the spammy "GET /status 200" messages
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 app = Flask(__name__)
 
-# --- BACKEND: WINDOWS MEDIA CONTROL ---
+# --- 2. WINDOWS MEDIA IMPORTS ---
+from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+from winrt.windows.storage.streams import DataReader
 
+# --- 3. BACKEND: TALK TO WINDOWS ---
 async def get_media_info():
-    """Reads the currently playing song from Windows."""
     try:
-        # Get the main media manager
         sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
-        # Get the active session (Apple Music, Spotify, etc.)
         session = sessions.get_current_session()
-
         if session:
-            # Get the metadata (song info)
             props = await session.try_get_media_properties_async()
-            info = {
+            return {
                 "title": props.title if props.title else "Unknown Title",
                 "artist": props.artist if props.artist else "Unknown Artist",
                 "album": props.album_title if props.album_title else ""
             }
-            return info
-    except Exception as e:
-        print(f"Error: {e}")
-    
-    # Default if nothing is playing
+    except:
+        pass
     return {"title": "Nothing Playing", "artist": "Windows Media", "album": ""}
 
 async def media_action(action):
-    """Sends Play/Pause/Skip commands to Windows."""
     try:
         sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
         session = sessions.get_current_session()
         if session:
-            if action == 'play':
-                await session.try_toggle_play_pause_async()
-            elif action == 'next':
-                await session.try_skip_next_async()
-            elif action == 'prev':
-                await session.try_skip_previous_async()
-    except Exception as e:
-        print(f"Error sending command: {e}")
+            if action == 'play': await session.try_toggle_play_pause_async()
+            elif action == 'next': await session.try_skip_next_async()
+            elif action == 'prev': await session.try_skip_previous_async()
+    except:
+        pass
 
-# --- FRONTEND: HTML + TAILWIND CSS ---
-# This is the "website" your iPhone will see.
+# --- 4. FRONTEND: CLEANER ICONS ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music Remote</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Remote</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background-color: #0f172a; color: white; }
-        /* Prevent double-tap zoom on iPhone */
-        button { touch-action: manipulation; }
+        body { background-color: #0f172a; color: white; -webkit-tap-highlight-color: transparent; }
+        button:active { transform: scale(0.95); opacity: 0.7; }
+        button { transition: all 0.1s; touch-action: manipulation; }
     </style>
     <script>
-        // 1. Refresh Song Info every 1 second
         setInterval(async () => {
             try {
-                const response = await fetch('/status');
-                const data = await response.json();
-                document.getElementById('title').innerText = data.title;
-                document.getElementById('artist').innerText = data.artist;
-                document.getElementById('album').innerText = data.album;
-            } catch (e) { console.log("Connection lost"); }
+                const res = await fetch('/status');
+                const data = await res.json();
+                document.getElementById('t').innerText = data.title;
+                document.getElementById('a').innerText = data.artist;
+            } catch (e) {}
         }, 1000);
 
-        // 2. Button Click Logic
-        async function send(action) {
-            // Add a little visual "press" effect
-            const btn = event.currentTarget;
-            btn.classList.add('scale-95', 'opacity-80');
-            setTimeout(() => btn.classList.remove('scale-95', 'opacity-80'), 100);
-            
-            // Send command to server
-            await fetch('/control/' + action);
-        }
+        function send(action) { fetch('/control/' + action); }
     </script>
 </head>
-<body class="flex items-center justify-center h-screen select-none overflow-hidden">
-
-    <div class="w-full max-w-md p-6 bg-slate-800 rounded-3xl shadow-2xl border border-slate-700 text-center mx-4">
-        
-        <div class="mb-8 mt-2">
-            <p class="text-slate-400 text-xs uppercase tracking-widest mb-4">Now Playing</p>
-            <h1 id="title" class="text-3xl font-bold text-white mb-2 truncate leading-tight">Waiting...</h1>
-            <h2 id="artist" class="text-xl text-sky-400 font-medium truncate">Connect to PC</h2>
-            <p id="album" class="text-slate-500 text-sm mt-1 truncate"></p>
-        </div>
-
-        <div class="flex justify-center gap-6 mb-8">
-            <button onclick="send('voldown')" class="w-16 h-16 rounded-full bg-slate-700 hover:bg-slate-600 active:bg-slate-500 flex items-center justify-center transition-all shadow-lg">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-                </svg>
-            </button>
-            <button onclick="send('volup')" class="w-16 h-16 rounded-full bg-slate-700 hover:bg-slate-600 active:bg-slate-500 flex items-center justify-center transition-all shadow-lg">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                </svg>
-            </button>
-        </div>
-
-        <div class="h-px bg-slate-700 w-full mb-8"></div>
-
-        <div class="flex justify-between items-center px-2">
-            <button onclick="send('prev')" class="transform transition-transform active:scale-90 text-slate-300 hover:text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M8.445 14.832A1 1 0 0010 14v-2.798l5.445 3.63A1 1 0 0017 14V6a1 1 0 00-1.555-.832L10 8.798V6a1 1 0 00-1.555-.832l-6 4a1 1 0 000 1.664l6 4z" />
-                </svg>
-            </button>
-
-            <button onclick="send('play')" class="w-20 h-20 rounded-full bg-sky-500 hover:bg-sky-400 shadow-lg shadow-sky-500/50 flex items-center justify-center transform transition-transform active:scale-90 text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
-                </svg>
-            </button>
-
-            <button onclick="send('next')" class="transform transition-transform active:scale-90 text-slate-300 hover:text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M4.555 14.832l-1.566.835A1 1 0 003 16V4a1 1 0 001.555-.832L10 6.798v2.798L9 8.333V6a1 1 0 00-1.555-.832l-6 4a1 1 0 000 1.664l6 4z" />
-                    <path d="M14.555 14.832A1 1 0 0016 14V6a1 1 0 00-1.555-.832l-6 4a1 1 0 000 1.664l6 4z" />
-                </svg>
-            </button>
-        </div>
+<body class="flex flex-col items-center justify-center h-screen w-screen overflow-hidden select-none">
+    
+    <div class="text-center w-full px-8 mb-10">
+        <h1 id="t" class="text-3xl font-bold text-white mb-2 truncate drop-shadow-lg">Loading...</h1>
+        <h2 id="a" class="text-xl text-slate-400 font-medium truncate">Connecting</h2>
     </div>
+
+    <div class="flex gap-8 mb-10">
+        <button onclick="send('voldown')" class="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center shadow-lg border border-slate-700">
+            <svg class="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/></svg>
+        </button>
+        <button onclick="send('volup')" class="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center shadow-lg border border-slate-700">
+            <svg class="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        </button>
+    </div>
+
+    <div class="flex items-center gap-6">
+        <button onclick="send('prev')" class="p-4 text-slate-300 hover:text-white">
+            <svg class="w-12 h-12" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M11 19V5l-9 7 9 7zM20 19V5l-9 7 9 7z"></path>
+            </svg>
+        </button>
+
+        <button onclick="send('play')" class="w-24 h-24 rounded-full bg-blue-500 shadow-blue-500/50 shadow-2xl flex items-center justify-center text-white">
+            <svg class="w-10 h-10" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z"></path>
+            </svg>
+        </button>
+
+        <button onclick="send('next')" class="p-4 text-slate-300 hover:text-white">
+            <svg class="w-12 h-12" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M4 5v14l9-7-9-7zM13 5v14l9-7-9-7z"></path>
+            </svg>
+        </button>
+    </div>
+
 </body>
 </html>
 """
 
-# --- FLASK ROUTES ---
-
+# --- 5. ROUTES ---
 @app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
+def index(): return render_template_string(HTML_TEMPLATE)
 
 @app.route('/status')
-def status():
-    # Use asyncio to run the async Windows function
-    info = asyncio.run(get_media_info())
-    return jsonify(info)
+def status(): return jsonify(asyncio.run(get_media_info()))
 
 @app.route('/control/<action>')
 def control(action):
     if action in ['volup', 'voldown']:
-        # Volume uses "Keyboard Simulation" (PyAutoGUI)
-        key = 'volumeup' if action == 'volup' else 'volumedown'
-        pyautogui.press(key, presses=5)
+        pyautogui.press('volumeup' if action == 'volup' else 'volumedown', presses=3)
     else:
-        # Media uses "Windows Internal Controls" (WinRT)
         asyncio.run(media_action(action))
-    return "OK"
+    return "", 204
 
 if __name__ == '__main__':
-    # '0.0.0.0' lets your iPhone connect.
-    # '5000' is the port number.
-    print("Server starting... Connect your iPhone to http://YOUR-PC-IP:5000")
+    # Run server
     app.run(host='0.0.0.0', port=5000)
