@@ -3,8 +3,13 @@ import logging
 from flask import Flask, jsonify, render_template_string
 import pyautogui
 
-# --- 1. CRASH PREVENTION & SILENCE ---
-pyautogui.FAILSAFE = False
+# Audio Imports (The secret to bypassing the lock screen)
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+# --- 1. SETUP & SILENCE ---
+pyautogui.FAILSAFE = False # Just in case
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 app = Flask(__name__)
@@ -12,25 +17,46 @@ app = Flask(__name__)
 # --- 2. WINDOWS MEDIA IMPORTS ---
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
 
-# --- 3. BACKEND: GET INFO & STATUS ---
+# --- 3. AUDIO CONTROL HELPER ---
+def change_volume(amount):
+    """
+    Changes volume directly via Audio Driver.
+    amount: +0.10 (Up 10%) or -0.10 (Down 10%)
+    Works even if screen is locked/screensaver is on.
+    """
+    try:
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        
+        # Get current level (0.0 to 1.0)
+        current = volume.GetMasterVolumeLevelScalar()
+        
+        # Calculate new level (clamped between 0.0 and 1.0)
+        new_vol = max(0.0, min(1.0, current + amount))
+        
+        # Set it
+        volume.SetMasterVolumeLevelScalar(new_vol, None)
+    except Exception as e:
+        print(f"Volume Error: {e}")
+
+# --- 4. BACKEND: GET INFO ---
 async def get_media_info():
     info = {
         "title": "Nothing Playing", 
         "artist": "Windows Media", 
         "album": "",
-        "is_playing": False  # Default to False
+        "is_playing": False
     }
     try:
         sessions = await GlobalSystemMediaTransportControlsSessionManager.request_async()
         session = sessions.get_current_session()
         if session:
-            # Get Song Details
             props = await session.try_get_media_properties_async()
             info["title"] = props.title if props.title else "Unknown Title"
             info["artist"] = props.artist if props.artist else "Unknown Artist"
             
-            # Get Playback Status (Check if actually playing)
-            # In Windows: 4 = Playing, 5 = Paused
+            # Check if playing
             playback_info = session.get_playback_info()
             if playback_info:
                 info["is_playing"] = (playback_info.playback_status == 4)
@@ -49,7 +75,7 @@ async def media_action(action):
     except:
         pass
 
-# --- 4. FRONTEND: SMART ICON SWAPPING ---
+# --- 5. FRONTEND ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -62,8 +88,6 @@ HTML_TEMPLATE = """
         body { background-color: #0f172a; color: white; -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.95); opacity: 0.8; }
         button { transition: all 0.1s; touch-action: manipulation; }
-        
-        /* Utility to hide/show icons */
         .hidden { display: none; }
     </style>
     <script>
@@ -71,21 +95,16 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
-                
-                // Update Text
                 document.getElementById('t').innerText = data.title;
                 document.getElementById('a').innerText = data.artist;
 
-                // Update Play/Pause Icon Logic
                 const playIcon = document.getElementById('icon-play');
                 const pauseIcon = document.getElementById('icon-pause');
                 
                 if (data.is_playing) {
-                    // If playing, show PAUSE icon
                     playIcon.classList.add('hidden');
                     pauseIcon.classList.remove('hidden');
                 } else {
-                    // If paused, show PLAY icon
                     playIcon.classList.remove('hidden');
                     pauseIcon.classList.add('hidden');
                 }
@@ -117,15 +136,8 @@ HTML_TEMPLATE = """
         </button>
 
         <button onclick="send('play')" class="w-24 h-24 rounded-full bg-blue-500 shadow-blue-500/50 shadow-2xl flex items-center justify-center text-white">
-            
-            <svg id="icon-play" class="w-10 h-10" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z"></path>
-            </svg>
-
-            <svg id="icon-pause" class="w-10 h-10 hidden" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path>
-            </svg>
-
+            <svg id="icon-play" class="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
+            <svg id="icon-pause" class="w-10 h-10 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path></svg>
         </button>
 
         <button onclick="send('next')" class="p-4 text-slate-300 hover:text-white">
@@ -137,7 +149,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- 5. ROUTES ---
+# --- 6. ROUTES ---
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
@@ -146,9 +158,13 @@ def status(): return jsonify(asyncio.run(get_media_info()))
 
 @app.route('/control/<action>')
 def control(action):
-    if action == 'volup': pyautogui.press('volumeup', presses=5)
-    elif action == 'voldown': pyautogui.press('volumedown', presses=5)
-    else: asyncio.run(media_action(action))
+    # DIRECT VOLUME CONTROL (Bypasses Screensaver)
+    if action == 'volup':
+        change_volume(0.10) # Up 10%
+    elif action == 'voldown':
+        change_volume(-0.10) # Down 10%
+    else:
+        asyncio.run(media_action(action))
     return "", 204
 
 if __name__ == '__main__':
